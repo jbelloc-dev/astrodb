@@ -13,7 +13,8 @@ import {
   Compass,
   Search,
   Filter,
-  RotateCcw
+  RotateCcw,
+  BarChart3
 } from 'lucide-react';
 import { AstroStats } from '../types/fits';
 
@@ -30,6 +31,7 @@ interface HeaderProps {
   onLoadSamples: () => void;
   onOpenSqlConsole: () => void;
   onOpenExport: () => void;
+  onOpenStats: () => void;
   isLoadingSamples: boolean;
   searchQuery?: string;
   onSearchChange?: (q: string) => void;
@@ -48,6 +50,7 @@ export const Header: React.FC<HeaderProps> = ({
   onLoadSamples,
   onOpenSqlConsole,
   onOpenExport,
+  onOpenStats,
   isLoadingSamples,
   searchQuery = '',
   onSearchChange
@@ -138,6 +141,18 @@ export const Header: React.FC<HeaderProps> = ({
             >
               <Database className="w-3.5 h-3.5 text-blue-400" />
               <span>Consola SQL</span>
+            </button>
+
+            {/* Stats Dashboard (Charts) */}
+            <button
+              id="btn-open-stats"
+              onClick={onOpenStats}
+              disabled={totalImagesCount === 0}
+              className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-medium text-emerald-300 bg-emerald-500/10 hover:bg-emerald-500/20 border border-emerald-500/30 rounded-md transition active:scale-95 disabled:opacity-40"
+              title="Obre el panell de gràfiques i estadístiques"
+            >
+              <BarChart3 className="w-3.5 h-3.5 text-emerald-400" />
+              <span>Estadístiques</span>
             </button>
 
             {/* Export CSV / DB */}

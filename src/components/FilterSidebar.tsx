@@ -1,16 +1,17 @@
 import React from 'react';
-import { 
-  Search, 
-  SlidersHorizontal, 
-  RotateCcw, 
-  Thermometer, 
-  Compass, 
-  Clock, 
+import {
+  Search,
+  SlidersHorizontal,
+  RotateCcw,
+  Thermometer,
+  Compass,
+  Clock,
   Filter as FilterIcon,
   Tag,
   X,
   Layers,
-  Database
+  Database,
+  CalendarRange
 } from 'lucide-react';
 import { FitsFilterState } from '../types/fits';
 
@@ -171,9 +172,11 @@ export const FilterSidebar: React.FC<FilterSidebarProps> = ({
         <div className="flex items-center justify-between text-xs">
           <span className="font-medium text-slate-400 flex items-center gap-1.5 text-[11px] uppercase tracking-wider">
             <Clock className="w-3 h-3 text-blue-400" />
-            <span>Exposició Mín</span>
+            <span>Exposició (s)</span>
           </span>
-          <span className="font-mono text-blue-400 font-semibold">{filters.min_exposure}s</span>
+          <span className="font-mono text-blue-400 font-semibold">
+            {filters.min_exposure}s - {filters.max_exposure}s
+          </span>
         </div>
         <input
           type="range"
@@ -184,11 +187,24 @@ export const FilterSidebar: React.FC<FilterSidebarProps> = ({
           onChange={(e) => handleTextChange('min_exposure', Number(e.target.value))}
           className="w-full accent-blue-500 h-1 bg-slate-700 rounded cursor-pointer"
         />
-        <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-          <span>0s</span>
-          <span>120s</span>
-          <span>300s</span>
-          <span>600s+</span>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min="0"
+            value={filters.min_exposure}
+            onChange={(e) => handleTextChange('min_exposure', Math.max(0, Number(e.target.value)))}
+            className="w-1/2 bg-[#0D1117] border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 text-center font-mono focus:outline-none focus:border-blue-500"
+            placeholder="Min s"
+          />
+          <span className="text-slate-600">-</span>
+          <input
+            type="number"
+            min="0"
+            value={filters.max_exposure}
+            onChange={(e) => handleTextChange('max_exposure', Math.max(0, Number(e.target.value)))}
+            className="w-1/2 bg-[#0D1117] border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 text-center font-mono focus:outline-none focus:border-blue-500"
+            placeholder="Max s"
+          />
         </div>
       </div>
 
@@ -197,9 +213,11 @@ export const FilterSidebar: React.FC<FilterSidebarProps> = ({
         <div className="flex items-center justify-between text-xs">
           <span className="font-medium text-slate-400 flex items-center gap-1.5 text-[11px] uppercase tracking-wider">
             <Thermometer className="w-3 h-3 text-orange-400" />
-            <span>Temp Màx Sensor</span>
+            <span>Temp Sensor</span>
           </span>
-          <span className="font-mono text-orange-400 font-semibold">{filters.max_temp}°C</span>
+          <span className="font-mono text-orange-400 font-semibold">
+            {filters.min_temp}°C - {filters.max_temp}°C
+          </span>
         </div>
         <input
           type="range"
@@ -210,11 +228,26 @@ export const FilterSidebar: React.FC<FilterSidebarProps> = ({
           onChange={(e) => handleTextChange('max_temp', Number(e.target.value))}
           className="w-full accent-orange-500 h-1 bg-slate-700 rounded cursor-pointer"
         />
-        <div className="flex justify-between text-[10px] text-slate-500 font-mono">
-          <span>-30°C</span>
-          <span>-10°C</span>
-          <span>+10°C</span>
-          <span>+35°C</span>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min="-50"
+            max="50"
+            value={filters.min_temp}
+            onChange={(e) => handleTextChange('min_temp', Number(e.target.value))}
+            className="w-1/2 bg-[#0D1117] border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 text-center font-mono focus:outline-none focus:border-orange-500"
+            placeholder="Min °C"
+          />
+          <span className="text-slate-600">-</span>
+          <input
+            type="number"
+            min="-50"
+            max="50"
+            value={filters.max_temp}
+            onChange={(e) => handleTextChange('max_temp', Number(e.target.value))}
+            className="w-1/2 bg-[#0D1117] border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 text-center font-mono focus:outline-none focus:border-orange-500"
+            placeholder="Max °C"
+          />
         </div>
       </div>
 
@@ -248,6 +281,31 @@ export const FilterSidebar: React.FC<FilterSidebarProps> = ({
             onChange={(e) => handleTextChange('max_angle', Math.max(0, Math.min(360, Number(e.target.value))))}
             className="w-1/2 bg-[#0D1117] border border-slate-700 rounded px-2 py-1 text-xs text-slate-200 text-center font-mono focus:outline-none focus:border-blue-500"
             placeholder="Max °"
+          />
+        </div>
+      </div>
+
+      {/* Date Range Filter */}
+      <div className="space-y-1.5 pt-2 border-t border-slate-700/40">
+        <label className="text-[11px] font-medium text-slate-400 flex items-center gap-1.5 uppercase tracking-wider">
+          <CalendarRange className="w-3 h-3 text-slate-400" />
+          <span>Rang de Dates de Captura</span>
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            id="filter-date-from"
+            type="date"
+            value={filters.date_from}
+            onChange={(e) => handleTextChange('date_from', e.target.value)}
+            className="w-1/2 bg-[#0D1117] border border-slate-700 focus:border-blue-500 rounded px-2 py-1 text-[11px] text-slate-200 font-mono focus:outline-none"
+          />
+          <span className="text-slate-600">-</span>
+          <input
+            id="filter-date-to"
+            type="date"
+            value={filters.date_to}
+            onChange={(e) => handleTextChange('date_to', e.target.value)}
+            className="w-1/2 bg-[#0D1117] border border-slate-700 focus:border-blue-500 rounded px-2 py-1 text-[11px] text-slate-200 font-mono focus:outline-none"
           />
         </div>
       </div>

@@ -19,6 +19,7 @@ import { FitsMetadata, FitsFilterState, AstroStats } from './types/fits';
 import { FitsParser } from './utils/fitsParser';
 import { generateSampleAstroLibrary } from './utils/sampleData';
 import { SqlStorage } from './utils/sqlStorage';
+import { useDebouncedValue } from './utils/useDebouncedValue';
 
 import { Header } from './components/Header';
 import { FilterSidebar } from './components/FilterSidebar';
@@ -29,6 +30,7 @@ import { FitsViewerModal } from './components/FitsViewerModal';
 import { SqlConsoleModal } from './components/SqlConsoleModal';
 import { ExportModal } from './components/ExportModal';
 import { DeleteConfirmModal } from './components/DeleteConfirmModal';
+import { StatsDashboard } from './components/StatsDashboard';
 
 const DEFAULT_FILTERS: FitsFilterState = {
   search: '',
@@ -59,6 +61,7 @@ export default function App() {
   const [isScannerOpen, setIsScannerOpen] = useState(false);
   const [isSqlConsoleOpen, setIsSqlConsoleOpen] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
+  const [isStatsOpen, setIsStatsOpen] = useState(false);
   const [isMobileFilterOpen, setIsMobileFilterOpen] = useState(false);
   const [isFilterSidebarOpen, setIsFilterSidebarOpen] = useState(false);
   const [selectedImage, setSelectedImage] = useState<FitsMetadata | null>(null);
@@ -203,12 +206,17 @@ export default function App() {
     }
   };
 
+  // Debounce the search term used for the (potentially expensive) filter
+  // pass, while the search inputs themselves stay bound to `filters.search`
+  // directly so typing feels instant regardless of catalog size.
+  const debouncedSearch = useDebouncedValue(filters.search, 150);
+
   // Filter & Search computation
   const filteredImages = useMemo(() => {
     return images.filter(img => {
       // Search
-      if (filters.search) {
-        const term = filters.search.toLowerCase();
+      if (debouncedSearch) {
+        const term = debouncedSearch.toLowerCase();
         const matchesName = img.object_name.toLowerCase().includes(term);
         const matchesFile = img.file_name.toLowerCase().includes(term);
         const matchesTelescope = (img.telescope || '').toLowerCase().includes(term);
@@ -241,13 +249,15 @@ export default function App() {
       }
 
       // Exposure time
-      if (img.exposure_time < filters.min_exposure) {
+      if (img.exposure_time < filters.min_exposure || img.exposure_time > filters.max_exposure) {
         return false;
       }
 
       // Sensor Temp
-      if (img.sensor_temp !== null && img.sensor_temp > filters.max_temp) {
-        return false;
+      if (img.sensor_temp !== null) {
+        if (img.sensor_temp > filters.max_temp || img.sensor_temp < filters.min_temp) {
+          return false;
+        }
       }
 
       // Rotation Angle
@@ -255,6 +265,14 @@ export default function App() {
         if (img.rotation_angle < filters.min_angle || img.rotation_angle > filters.max_angle) {
           return false;
         }
+      }
+
+      // Date range (compares the YYYY-MM-DD prefix, so this stays correct
+      // regardless of the time-of-day or timezone suffix in date_obs)
+      if (filters.date_from || filters.date_to) {
+        const obsDate = (img.date_obs || '').slice(0, 10);
+        if (filters.date_from && obsDate < filters.date_from) return false;
+        if (filters.date_to && obsDate > filters.date_to) return false;
       }
 
       return true;
@@ -273,7 +291,27 @@ export default function App() {
 
       return filters.sortOrder === 'asc' ? valA - valB : valB - valA;
     });
-  }, [images, filters]);
+    // Deliberately depends on the individual fields (not the whole `filters`
+    // object) and on `debouncedSearch` rather than `filters.search`, so
+    // typing in the search box doesn't force this to recompute on every
+    // keystroke — only once the debounce settles.
+  }, [
+    images,
+    debouncedSearch,
+    filters.image_type,
+    filters.filter_name,
+    filters.object_name,
+    filters.min_exposure,
+    filters.max_exposure,
+    filters.min_temp,
+    filters.max_temp,
+    filters.min_angle,
+    filters.max_angle,
+    filters.date_from,
+    filters.date_to,
+    filters.sortBy,
+    filters.sortOrder
+  ]);
 
   // Cap the number of cards/rows actually mounted in the DOM at once. Even
   // with the backend fixed, a catalog of several thousand frames rendered as
@@ -373,22 +411,15 @@ export default function App() {
     };
   }, [filteredImages]);
 
-  // Check if any filter is currently applied
+  // Check if any filter is currently applied. Compared directly against
+  // DEFAULT_FILTERS (rather than hardcoded duplicate thresholds) so this
+  // can never drift out of sync with the actual defaults again.
   const isFiltered = useMemo(() => {
-    return (
-      filteredImages.length !== images.length ||
-      filters.search !== '' ||
-      filters.image_type !== 'ALL' ||
-      filters.filter_name !== 'ALL' ||
-      filters.object_name !== 'ALL' ||
-      filters.min_exposure > 0 ||
-      filters.max_temp < 40 ||
-      filters.min_angle > 0 ||
-      filters.max_angle < 360 ||
-      filters.date_from !== '' ||
-      filters.date_to !== ''
-    );
-  }, [filteredImages.length, images.length, filters]);
+    return (Object.keys(DEFAULT_FILTERS) as (keyof FitsFilterState)[]).some(key => {
+      if (key === 'sortBy' || key === 'sortOrder') return false;
+      return filters[key] !== DEFAULT_FILTERS[key];
+    });
+  }, [filters]);
 
   // Extract distinct objects & filters for dropdowns
   const availableObjects = useMemo(() => {
@@ -439,6 +470,7 @@ export default function App() {
         onLoadSamples={handleLoadSamples}
         onOpenSqlConsole={() => setIsSqlConsoleOpen(true)}
         onOpenExport={() => setIsExportOpen(true)}
+        onOpenStats={() => setIsStatsOpen(true)}
         isLoadingSamples={isLoadingSamples}
         searchQuery={filters.search}
         onSearchChange={(q) => setFilters(prev => ({ ...prev, search: q }))}
@@ -718,6 +750,15 @@ export default function App() {
         onClose={() => setIsExportOpen(false)}
         filteredImages={filteredImages}
         allImages={images}
+      />
+
+      {/* Statistics Dashboard (charts) Modal */}
+      <StatsDashboard
+        isOpen={isStatsOpen}
+        onClose={() => setIsStatsOpen(false)}
+        images={filteredImages}
+        stats={filteredStats}
+        isFiltered={isFiltered}
       />
 
       {/* Delete Confirmation Modal */}

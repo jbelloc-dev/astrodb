@@ -1,0 +1,6 @@
+{
+  "name": "FITS Astro Classifier & SQL Catalog",
+  "description": "Classificador d'imatges astronòmiques FITS amb extracció automàtica de metadades (objecte, exposició, angle/rotació, data, temperatura sensor), generació de preview de baixa resolució amb estirament astronòmic zscale/asinh, base de dades SQL amb consola interactiva de consultes, filtres de metadades, exportació multiformat (CSV, SQLite, SQL, JSON, Siril) i optimització mòbil.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

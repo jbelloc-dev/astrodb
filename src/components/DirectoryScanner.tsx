@@ -124,69 +124,112 @@ export const DirectoryScanner: React.FC<DirectoryScannerProps> = ({
   };
 
   /**
-   * Process and parse an array of FITS files, generate low-res miniatures and save to SQL database
+   * Process and parse an array of FITS files, generate low-res miniatures and save to SQL database.
+   *
+   * Duplicate prevention happens in two stages:
+   *  1. By relative path (cheap, no file reads): skips files whose path is already
+   *     in the catalog, so re-scanning a folder you've imported before doesn't
+   *     re-read everything again.
+   *  2. By file content (SHA-256 hash of the raw bytes): catches the same frame
+   *     being re-imported under a different name/folder, or duplicate copies
+   *     living in two different subfolders of the same selection — a path check
+   *     alone would miss both. Files are hashed a small bounded batch at a time
+   *     (not the whole selection at once) so a large directory import never has
+   *     to hold thousands of raw FITS buffers in memory simultaneously.
    */
   const processScannedFiles = async (allItems: ScannedFileInfo[]) => {
     setIsProcessing(true);
     setSkippedCount(0);
     setCurrentFileName('Comprovant fitxers ja catalogats...');
 
-    // Skip files whose relative path is already in the catalog, so
-    // re-scanning a folder you've imported before (e.g. after a new
-    // session got added) doesn't re-read and re-upload everything again.
     const knownPaths = await SqlStorage.getKnownPaths(allItems.map(i => i.relativePath));
-    const items = knownPaths.size > 0
+    const afterPathFilter = knownPaths.size > 0
       ? allItems.filter(i => !knownPaths.has(i.relativePath))
       : allItems;
-    const skipped = allItems.length - items.length;
-    if (skipped > 0) setSkippedCount(skipped);
+    let skipped = allItems.length - afterPathFilter.length;
+    let totalToProcess = afterPathFilter.length;
+    setProgress({ current: 0, total: totalToProcess });
 
-    setProgress({ current: 0, total: items.length });
     const parsedImages: FitsMetadata[] = [];
     const BATCH_SIZE = 4;
+    const HASH_CHUNK_SIZE = 8;
+    // Hashes already accepted earlier in this same run, so duplicate content
+    // within one drag/drop or folder selection is caught immediately, without
+    // waiting on a server round trip.
+    const seenHashesThisRun = new Set<string>();
     let unsavedBatch: FitsMetadata[] = [];
+    let processedIndex = 0;
 
-    for (let i = 0; i < items.length; i++) {
-      const { file, relativePath } = items[i];
-      setCurrentFileName(file.name);
-      setCurrentPath(relativePath);
-      setProgress({ current: i + 1, total: items.length });
+    for (let chunkStart = 0; chunkStart < afterPathFilter.length; chunkStart += HASH_CHUNK_SIZE) {
+      const chunk = afterPathFilter.slice(chunkStart, chunkStart + HASH_CHUNK_SIZE);
+      setCurrentFileName('Comprovant contingut duplicat...');
 
-      // Yield event loop and give the garbage collector breathing room
-      await new Promise(r => setTimeout(r, 20));
-
-      try {
+      const hashedChunk: { file: File; relativePath: string; buffer: ArrayBuffer; hash: string }[] = [];
+      for (const { file, relativePath } of chunk) {
         const buffer = await file.arrayBuffer();
-        // Parse metadata and generate lightweight thumbnail (< 40 KB)
-        const metadata = await FitsParser.parseFits(
-          buffer,
-          file.name,
-          file.size,
-          relativePath
-        );
-
-        // Strip the heavy pixel array (not needed once the thumbnail is
-        // generated) but keep the original file itself as `rawBlob` — it
-        // gets persisted into IndexedDB (see SqlStorage.saveImagesBatch) so
-        // "Baixar FITS" can return the real original file later, not just
-        // the parsed metadata.
-        const persistItem: FitsMetadata = {
-          ...metadata,
-          headers_json: metadata.headers_json || {},
-          rawBlob: file
-        };
-        delete (persistItem as any).pixelData;
-
-        parsedImages.push(persistItem);
-        unsavedBatch.push(persistItem);
-
-        // Periodically batch sync to SQLite database and IndexedDB in small chunks
-        if (unsavedBatch.length >= BATCH_SIZE) {
-          await SqlStorage.saveImagesBatch(unsavedBatch);
-          unsavedBatch = [];
+        const hash = await FitsParser.hashBuffer(buffer);
+        if (hash && seenHashesThisRun.has(hash)) {
+          continue;
         }
-      } catch (err: any) {
-        console.warn(`Fitxer omès per error en decodificar ${file.name}:`, err);
+        if (hash) seenHashesThisRun.add(hash);
+        hashedChunk.push({ file, relativePath, buffer, hash });
+      }
+
+      const knownHashes = await SqlStorage.getKnownHashes(
+        hashedChunk.map(h => h.hash).filter(Boolean)
+      );
+      const toParse = knownHashes.size > 0
+        ? hashedChunk.filter(h => !(h.hash && knownHashes.has(h.hash)))
+        : hashedChunk;
+
+      const chunkSkipped = chunk.length - toParse.length;
+      skipped += chunkSkipped;
+      totalToProcess -= chunkSkipped;
+
+      for (const { file, relativePath, buffer, hash } of toParse) {
+        processedIndex++;
+        setCurrentFileName(file.name);
+        setCurrentPath(relativePath);
+        setProgress({ current: processedIndex, total: totalToProcess });
+
+        // Yield event loop and give the garbage collector breathing room
+        await new Promise(r => setTimeout(r, 20));
+
+        try {
+          // Parse metadata and generate lightweight thumbnail (< 40 KB).
+          // The hash was already computed above, so it's passed through
+          // instead of being redone here.
+          const metadata = await FitsParser.parseFits(
+            buffer,
+            file.name,
+            file.size,
+            relativePath,
+            hash
+          );
+
+          // Strip the heavy pixel array (not needed once the thumbnail is
+          // generated) but keep the original file itself as `rawBlob` — it
+          // gets persisted into IndexedDB (see SqlStorage.saveImagesBatch) so
+          // "Baixar FITS" can return the real original file later, not just
+          // the parsed metadata.
+          const persistItem: FitsMetadata = {
+            ...metadata,
+            headers_json: metadata.headers_json || {},
+            rawBlob: file
+          };
+          delete (persistItem as any).pixelData;
+
+          parsedImages.push(persistItem);
+          unsavedBatch.push(persistItem);
+
+          // Periodically batch sync to SQLite database and IndexedDB in small chunks
+          if (unsavedBatch.length >= BATCH_SIZE) {
+            await SqlStorage.saveImagesBatch(unsavedBatch);
+            unsavedBatch = [];
+          }
+        } catch (err: any) {
+          console.warn(`Fitxer omès per error en decodificar ${file.name}:`, err);
+        }
       }
     }
 
@@ -196,6 +239,7 @@ export const DirectoryScanner: React.FC<DirectoryScannerProps> = ({
       unsavedBatch = [];
     }
 
+    if (skipped > 0) setSkippedCount(skipped);
     setProcessedCount(parsedImages.length);
     setIsProcessing(false);
     onScanComplete(parsedImages);

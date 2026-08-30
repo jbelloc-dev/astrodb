@@ -246,6 +246,32 @@ export class SqlStorage {
   }
 
   /**
+   * Ask the backend which of these SHA-256 file-content hashes are already
+   * catalogued, so identical FITS frames are recognised as duplicates even
+   * when they are re-imported under a different file name or folder path
+   * (a path-only check would miss that case entirely).
+   */
+  public static async getKnownHashes(hashes: string[]): Promise<Set<string>> {
+    if (hashes.length === 0) return new Set();
+    try {
+      const res = await fetch('/api/images/known', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ hashes })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.success && Array.isArray(data.knownHashes)) {
+          return new Set<string>(data.knownHashes);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not check known file hashes against server, will import everything:', err);
+    }
+    return new Set();
+  }
+
+  /**
    * Fetch all images with optional filters from SQLite Server or fallback to IndexedDB
    */
   public static async fetchImages(params: Record<string, any> = {}): Promise<FitsMetadata[]> {

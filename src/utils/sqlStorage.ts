@@ -622,6 +622,50 @@ export class SqlStorage {
     this.downloadBlob(content, zipName);
   }
 
+  /**
+   * Export the original FITS files (not just metadata/thumbnails) as a ZIP.
+   * Only images that still have their rawBlob — persisted in IndexedDB since
+   * the scan that imported them (see saveImagesBatch) — can be included;
+   * anything catalogued before that, or sample/demo data, is skipped and
+   * reported back via `skipped` so the caller can tell the user.
+   */
+  public static async exportOriginalsZip(
+    images: FitsMetadata[],
+    zipName = 'fits_originals.zip'
+  ): Promise<{ included: number; skipped: number }> {
+    const zip = new JSZip();
+    const folder = zip.folder('fits_originals');
+    const usedNames = new Set<string>();
+    let included = 0;
+    let skipped = 0;
+
+    for (const img of images) {
+      if (!img.rawBlob) {
+        skipped++;
+        continue;
+      }
+
+      // Guard against two images sharing the same file_name (e.g. imported
+      // from different subfolders) colliding inside the flat ZIP folder.
+      let name = img.file_name || `${img.id}.fits`;
+      if (usedNames.has(name)) {
+        const dot = name.lastIndexOf('.');
+        name = dot > 0 ? `${name.slice(0, dot)}_${img.id}${name.slice(dot)}` : `${name}_${img.id}`;
+      }
+      usedNames.add(name);
+
+      folder?.file(name, img.rawBlob);
+      included++;
+    }
+
+    if (included > 0) {
+      const content = await zip.generateAsync({ type: 'blob' });
+      this.downloadBlob(content, zipName);
+    }
+
+    return { included, skipped };
+  }
+
   private static downloadBlob(blob: Blob, filename: string): void {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

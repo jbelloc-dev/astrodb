@@ -1,12 +1,13 @@
 import React, { useState } from 'react';
-import { 
-  X, 
-  Download, 
-  Database, 
-  FileSpreadsheet, 
-  FileCode, 
-  FileArchive, 
-  Layers, 
+import {
+  X,
+  Download,
+  Database,
+  FileSpreadsheet,
+  FileCode,
+  FileArchive,
+  Archive,
+  Layers,
   CheckCircle2
 } from 'lucide-react';
 import { FitsMetadata } from '../types/fits';
@@ -27,11 +28,13 @@ export const ExportModal: React.FC<ExportModalProps> = ({
 }) => {
   const [useOnlyFiltered, setUseOnlyFiltered] = useState<boolean>(true);
   const [isExporting, setIsExporting] = useState<boolean>(false);
+  const [isExportingOriginals, setIsExportingOriginals] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
   const targetList = useOnlyFiltered ? filteredImages : allImages;
+  const originalsAvailableCount = targetList.filter(img => !!img.rawBlob).length;
 
   const handleExportCsv = () => {
     SqlStorage.exportToCsv(targetList, `fits_catalog_${Date.now()}.csv`);
@@ -58,6 +61,25 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     await SqlStorage.exportThumbnailsZip(targetList, `fits_previews_${Date.now()}.zip`);
     setIsExporting(false);
     showDone("Arxiu ZIP amb totes les miniatures descarregat!");
+  };
+
+  const handleExportOriginalsZip = async () => {
+    setIsExportingOriginals(true);
+    const { included, skipped } = await SqlStorage.exportOriginalsZip(
+      targetList,
+      `fits_originals_${Date.now()}.zip`
+    );
+    setIsExportingOriginals(false);
+
+    if (included === 0) {
+      showDone(
+        `Cap de les ${targetList.length} imatges seleccionades conserva el fitxer FITS original (només es guarda per als escanejos fets amb la versió actual de l'app).`
+      );
+    } else if (skipped > 0) {
+      showDone(`ZIP amb ${included} fitxers FITS originals descarregat (${skipped} imatges omeses, sense original conservat).`);
+    } else {
+      showDone(`ZIP amb els ${included} fitxers FITS originals descarregat correctament!`);
+    }
   };
 
   const handleDownloadSqlite = () => {
@@ -221,6 +243,25 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                   {isExporting ? 'Comprimint...' : 'Arxiu ZIP de Miniatures'}
                 </div>
                 <div className="text-[10px] text-slate-400">Totes les imatges estirades</div>
+              </div>
+            </button>
+
+            {/* Original FITS files ZIP */}
+            <button
+              onClick={handleExportOriginalsZip}
+              disabled={isExportingOriginals}
+              className="p-3 bg-[#0D1117] hover:bg-slate-800/80 border border-slate-700/50 hover:border-blue-500/50 rounded-lg text-left transition flex items-start space-x-3 group disabled:opacity-50"
+            >
+              <div className="p-2 rounded bg-rose-500/10 text-rose-400 group-hover:scale-105 transition">
+                <Archive className="w-4 h-4" />
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-white">
+                  {isExportingOriginals ? 'Comprimint...' : 'Fitxers FITS Originals (ZIP)'}
+                </div>
+                <div className="text-[10px] text-slate-400">
+                  {originalsAvailableCount} de {targetList.length} amb l'original conservat
+                </div>
               </div>
             </button>
 

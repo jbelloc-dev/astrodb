@@ -165,13 +165,17 @@ export const DirectoryScanner: React.FC<DirectoryScannerProps> = ({
           relativePath
         );
 
-        // Strip heavy arrays to preserve browser memory
+        // Strip the heavy pixel array (not needed once the thumbnail is
+        // generated) but keep the original file itself as `rawBlob` — it
+        // gets persisted into IndexedDB (see SqlStorage.saveImagesBatch) so
+        // "Baixar FITS" can return the real original file later, not just
+        // the parsed metadata.
         const persistItem: FitsMetadata = {
           ...metadata,
-          headers_json: metadata.headers_json || {}
+          headers_json: metadata.headers_json || {},
+          rawBlob: file
         };
         delete (persistItem as any).pixelData;
-        delete (persistItem as any).rawBlob;
 
         parsedImages.push(persistItem);
         unsavedBatch.push(persistItem);

@@ -192,7 +192,11 @@ export default function App() {
     a.click();
   };
 
-  // Download raw FITS if blob is present or metadata JSON
+  // Download the original FITS file (kept as rawBlob in IndexedDB since the
+  // scan that imported it). Falls back to a metadata JSON export only for
+  // images that never had the original persisted — sample/demo data, or
+  // anything catalogued before this app started keeping rawBlob — and says
+  // so explicitly instead of silently handing back the wrong file type.
   const handleDownloadFits = (image: FitsMetadata) => {
     if (image.rawBlob) {
       const url = URL.createObjectURL(image.rawBlob);
@@ -202,6 +206,9 @@ export default function App() {
       a.click();
       URL.revokeObjectURL(url);
     } else {
+      window.alert(
+        `No es conserva el fitxer FITS original de "${image.file_name}" (probablement es va catalogar abans d'aquesta versió, o és una imatge de mostra). Es descarregaran les metadades en format JSON en el seu lloc.`
+      );
       SqlStorage.exportToJson([image], `${image.file_name}_metadata.json`);
     }
   };

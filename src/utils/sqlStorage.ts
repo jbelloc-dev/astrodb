@@ -149,8 +149,11 @@ export class SqlStorage {
       const store = tx.objectStore(IDB_STORE);
 
       for (const img of images) {
-        // Exclude rawBlob and large pixelData memory buffers from permanent serialization
-        const { rawBlob, pixelData, ...storable } = img;
+        // Exclude the large pixelData memory buffer from permanent
+        // serialization, but keep rawBlob: IndexedDB stores Blobs natively
+        // (no base64 inflation), and this is what lets "Baixar FITS" return
+        // the real original file later instead of falling back to metadata.
+        const { pixelData, ...storable } = img;
         store.put(storable);
       }
 
@@ -286,10 +289,18 @@ export class SqlStorage {
       // Backend offline or starting up
     }
 
-    // 3. Merge both collections by ID (never lose any uploaded image)
+    // 3. Merge both collections by ID (never lose any uploaded image).
+    // The server row never carries the original file bytes (only IndexedDB
+    // does — see saveImagesBatch), so when a server row and a local row
+    // share an id, keep the local rawBlob grafted onto the server row
+    // instead of losing it, or "Baixar FITS" would fall back to metadata
+    // JSON again for every image after the very first page reload.
+    const localById = new Map(localItems.map(item => [item.id, item]));
+
     const combinedMap = new Map<string, FitsMetadata>();
     for (const item of serverItems) {
-      combinedMap.set(item.id, item);
+      const local = localById.get(item.id);
+      combinedMap.set(item.id, local?.rawBlob ? { ...item, rawBlob: local.rawBlob } : item);
     }
     for (const item of localItems) {
       if (!combinedMap.has(item.id)) {

@@ -17,12 +17,15 @@ export class FitsParser {
     buffer: ArrayBuffer,
     fileName: string,
     fileSize?: number,
-    filePath?: string
+    filePath?: string,
+    precomputedHash?: string
   ): Promise<FitsMetadata> {
     // Hash the original on-disk bytes (before any decompression) so re-scanning
     // the same directory can be recognised as "already imported" even if the
     // file gets renamed or moved, and so exact duplicate frames are traceable.
-    const file_hash = await this.hashBuffer(buffer);
+    // Callers that already hashed the buffer to check for duplicates before
+    // parsing (see DirectoryScanner) can pass that hash in to avoid redoing it.
+    const file_hash = precomputedHash || await this.hashBuffer(buffer);
 
     buffer = await this.decompressIfNeeded(buffer, fileName);
 
@@ -294,8 +297,10 @@ export class FitsParser {
   /**
    * SHA-256 hash of the raw file bytes, hex-encoded. Cheap: we already have
    * the whole buffer in memory to parse it, so this adds no extra file I/O.
+   * Public so callers can hash a file up front (e.g. to check for content
+   * duplicates before doing any real parsing/thumbnail work).
    */
-  private static async hashBuffer(buffer: ArrayBuffer): Promise<string> {
+  static async hashBuffer(buffer: ArrayBuffer): Promise<string> {
     try {
       const digest = await crypto.subtle.digest('SHA-256', buffer);
       return Array.from(new Uint8Array(digest))

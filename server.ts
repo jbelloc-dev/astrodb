@@ -4,6 +4,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { createServer as createViteServer } from 'vite';
 import Database from 'better-sqlite3';
+import { createNasScanner } from './server/nasScanner';
 
 const DATA_DIR = path.join(process.cwd(), '.data');
 const THUMBS_DIR = path.join(DATA_DIR, 'thumbnails');
@@ -109,12 +110,14 @@ function persistThumbnailIfNeeded(id: string, thumbnailUrl: string): string {
     return thumbnailUrl || '';
   }
 
-  const match = /^data:([^;,]+)(;charset=[^;,]+)?(;base64)?,(.*)$/s.exec(thumbnailUrl);
+  // data:<mime>[;param...][;base64],<payload> — params include e.g. ";charset=utf-8"
+  // or the ";utf8" used by generateFallbackThumbnail's SVG placeholders.
+  const match = /^data:([^;,]+)((?:;[^;,]*)*),(.*)$/s.exec(thumbnailUrl);
   if (!match) return '';
 
   const mime = match[1];
-  const isBase64 = !!match[3];
-  const payload = match[4];
+  const isBase64 = /;base64$/i.test(match[2] || '');
+  const payload = match[3];
 
   let ext = 'jpg';
   if (mime.includes('svg')) ext = 'svg';
@@ -199,6 +202,53 @@ const insertManyTx = db.transaction((rows: any[]) => {
   return count;
 });
 
+/**
+ * Normalises an image payload (from the browser import or the NAS scanner)
+ * into a DB row, persisting its thumbnail to disk if it is still a data: URL.
+ */
+function toImageRow(img: any) {
+  const id = img.id || `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
+  const headersJson = typeof img.headers_json === 'object' ? JSON.stringify(img.headers_json) : (img.headers_json || '{}');
+  const thumbnailUrl = persistThumbnailIfNeeded(id, img.thumbnail_url || '');
+
+  return {
+    id,
+    file_name: img.file_name || 'unknown.fits',
+    file_path: img.file_path || '',
+    file_size: img.file_size || 0,
+    file_hash: img.file_hash || '',
+    object_name: img.object_name || 'Desconegut',
+    object_category: img.object_category || 'Deep Sky',
+    image_type: img.image_type || 'LIGHT',
+    exposure_time: img.exposure_time !== undefined ? Number(img.exposure_time) : 0,
+    sensor_temp: img.sensor_temp !== null && img.sensor_temp !== undefined ? Number(img.sensor_temp) : null,
+    rotation_angle: img.rotation_angle !== null && img.rotation_angle !== undefined ? Number(img.rotation_angle) : null,
+    date_obs: img.date_obs || new Date().toISOString(),
+    filter_name: img.filter_name || 'None',
+    telescope: img.telescope || '',
+    camera: img.camera || '',
+    focal_length: img.focal_length !== null && img.focal_length !== undefined ? Number(img.focal_length) : null,
+    gain: img.gain !== null && img.gain !== undefined ? Number(img.gain) : null,
+    bayer_pattern: img.bayer_pattern || '',
+    ra: img.ra || '',
+    dec: img.dec || '',
+    airmass: img.airmass !== null && img.airmass !== undefined ? Number(img.airmass) : null,
+    width: img.width || 0,
+    height: img.height || 0,
+    bitpix: img.bitpix || 16,
+    thumbnail_url: thumbnailUrl,
+    headers_json: headersJson,
+    custom_tags: img.custom_tags || '',
+    notes: img.notes || ''
+  };
+}
+
+const nasScanner = createNasScanner({
+  db,
+  toRow: toImageRow,
+  saveRows: (rows) => insertManyTx(rows)
+});
+
 async function startServer() {
   const app = express();
   const PORT = 3000;
@@ -211,6 +261,49 @@ async function startServer() {
 
   app.get('/api/health', (req: Request, res: Response) => {
     res.json({ status: 'ok', time: new Date().toISOString() });
+  });
+
+  // --- NAS scanner (FITS files read directly from the NAS share mounted in the container)
+  app.get('/api/nas/info', (req: Request, res: Response) => {
+    res.json({
+      success: true,
+      enabled: nasScanner.isEnabled(),
+      root: nasScanner.root,
+      autoScanIntervalMin: nasScanner.intervalMin,
+      state: nasScanner.getState()
+    });
+  });
+
+  app.get('/api/nas/status', (req: Request, res: Response) => {
+    res.json({ success: true, state: nasScanner.getState() });
+  });
+
+  app.post('/api/nas/scan', (req: Request, res: Response) => {
+    const subdir = typeof req.body?.subdir === 'string' ? req.body.subdir.trim() : '';
+    const { started, state } = nasScanner.start({ subdir, trigger: 'manual' });
+    if (!started && !state.running) {
+      return res.status(400).json({ success: false, error: state.message || 'No s\'ha pogut iniciar l\'escaneig', state });
+    }
+    res.status(started ? 202 : 200).json({ success: true, started, state });
+  });
+
+  app.post('/api/nas/cancel', (req: Request, res: Response) => {
+    res.json({ success: true, state: nasScanner.cancel() });
+  });
+
+  // Download the original FITS straight from the NAS (only for files inside the NAS root)
+  app.get('/api/images/:id/file', (req: Request, res: Response) => {
+    try {
+      const row = db.prepare('SELECT file_name, file_path FROM fits_images WHERE id = ?').get(req.params.id) as any;
+      if (!row) return res.status(404).json({ success: false, error: 'Imatge no trobada' });
+      const abs = nasScanner.resolveInsideRoot(row.file_path);
+      if (!abs || !fs.existsSync(abs)) {
+        return res.status(404).json({ success: false, error: 'El fitxer original no és accessible al NAS' });
+      }
+      res.download(abs, row.file_name || path.basename(abs));
+    } catch (err: any) {
+      res.status(500).json({ success: false, error: err.message });
+    }
   });
 
   // Get all images with optional filters
@@ -320,42 +413,7 @@ async function startServer() {
         return res.json({ success: true, count: 0 });
       }
 
-      const rows = images.map((img: any) => {
-        const id = img.id || `${Date.now()}_${Math.random().toString(36).substring(2, 9)}`;
-        const headersJson = typeof img.headers_json === 'object' ? JSON.stringify(img.headers_json) : (img.headers_json || '{}');
-        const thumbnailUrl = persistThumbnailIfNeeded(id, img.thumbnail_url || '');
-
-        return {
-          id,
-          file_name: img.file_name || 'unknown.fits',
-          file_path: img.file_path || '',
-          file_size: img.file_size || 0,
-          file_hash: img.file_hash || '',
-          object_name: img.object_name || 'Desconegut',
-          object_category: img.object_category || 'Deep Sky',
-          image_type: img.image_type || 'LIGHT',
-          exposure_time: img.exposure_time !== undefined ? Number(img.exposure_time) : 0,
-          sensor_temp: img.sensor_temp !== null && img.sensor_temp !== undefined ? Number(img.sensor_temp) : null,
-          rotation_angle: img.rotation_angle !== null && img.rotation_angle !== undefined ? Number(img.rotation_angle) : null,
-          date_obs: img.date_obs || new Date().toISOString(),
-          filter_name: img.filter_name || 'None',
-          telescope: img.telescope || '',
-          camera: img.camera || '',
-          focal_length: img.focal_length !== null && img.focal_length !== undefined ? Number(img.focal_length) : null,
-          gain: img.gain !== null && img.gain !== undefined ? Number(img.gain) : null,
-          bayer_pattern: img.bayer_pattern || '',
-          ra: img.ra || '',
-          dec: img.dec || '',
-          airmass: img.airmass !== null && img.airmass !== undefined ? Number(img.airmass) : null,
-          width: img.width || 0,
-          height: img.height || 0,
-          bitpix: img.bitpix || 16,
-          thumbnail_url: thumbnailUrl,
-          headers_json: headersJson,
-          custom_tags: img.custom_tags || '',
-          notes: img.notes || ''
-        };
-      });
+      const rows = images.map(toImageRow);
 
       const inserted = insertManyTx(rows);
       res.json({ success: true, count: inserted });

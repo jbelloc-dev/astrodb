@@ -11,6 +11,41 @@ export interface FitsPreviewOptions {
 }
 
 /**
+ * Encodes a raw RGBA pixel buffer into a JPEG data URL.
+ *
+ * The preview pipeline (debayer + Auto-STF stretch) is pure math and runs
+ * anywhere; only this last step needs a platform-specific encoder. In the
+ * browser we use a <canvas>; the server (which scans FITS files directly on
+ * the NAS, where there is no DOM) registers its own encoder via
+ * `setJpegEncoder` (see server/nasScanner.ts, using jpeg-js).
+ */
+export type JpegEncoder = (rgba: Uint8ClampedArray, width: number, height: number, quality: number) => string;
+
+let customJpegEncoder: JpegEncoder | null = null;
+
+export function setJpegEncoder(encoder: JpegEncoder | null) {
+  customJpegEncoder = encoder;
+}
+
+function canvasJpegEncoder(rgba: Uint8ClampedArray, width: number, height: number, quality: number): string {
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D context not available');
+  const imgData = ctx.createImageData(width, height);
+  imgData.data.set(rgba);
+  ctx.putImageData(imgData, 0, 0);
+  return canvas.toDataURL('image/jpeg', quality);
+}
+
+function encodeRgbaToJpeg(rgba: Uint8ClampedArray, width: number, height: number, quality: number): string {
+  if (customJpegEncoder) return customJpegEncoder(rgba, width, height, quality);
+  if (typeof document !== 'undefined') return canvasJpegEncoder(rgba, width, height, quality);
+  throw new Error('No JPEG encoder available (no DOM and no custom encoder registered)');
+}
+
+/**
  * Standard Astrophotography SCNR (Subtractive Chromatic Noise Reduction) algorithm
  * Removes the non-physical green cast caused by double-density green photosites in Bayer RGGB sensors.
  */
@@ -304,19 +339,12 @@ function generateOscColorBilinearJpeg(
     dstHeight = Math.max(16, Math.floor(srcHeight * scale));
   }
 
-  const canvas = document.createElement('canvas');
-  canvas.width = dstWidth;
-  canvas.height = dstHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return generateFallbackThumbnail('FITS', 'LIGHT');
-
-  const imgData = ctx.createImageData(dstWidth, dstHeight);
-  const data = imgData.data;
+  const data = new Uint8ClampedArray(dstWidth * dstHeight * 4);
 
   const scaleX = srcWidth / dstWidth;
   const scaleY = srcHeight / dstHeight;
 
-  // Bilinear Debayering pass sampled directly onto destination canvas
+  // Bilinear Debayering pass sampled directly onto the destination buffer
   for (let dy = 0; dy < dstHeight; dy++) {
     const srcY = Math.floor(dy * scaleY);
     const rowOffset = dy * dstWidth * 4;
@@ -365,8 +393,7 @@ function generateOscColorBilinearJpeg(
     }
   }
 
-  ctx.putImageData(imgData, 0, 0);
-  return canvas.toDataURL('image/jpeg', quality);
+  return encodeRgbaToJpeg(data, dstWidth, dstHeight, quality);
 }
 
 /**
@@ -409,14 +436,7 @@ function generateMonoJpeg(
     dstHeight = Math.max(16, Math.floor(srcHeight * scale));
   }
 
-  const canvas = document.createElement('canvas');
-  canvas.width = dstWidth;
-  canvas.height = dstHeight;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) return generateFallbackThumbnail('FITS', 'LIGHT');
-
-  const imgData = ctx.createImageData(dstWidth, dstHeight);
-  const data = imgData.data;
+  const data = new Uint8ClampedArray(dstWidth * dstHeight * 4);
 
   const scaleX = srcWidth / dstWidth;
   const scaleY = srcHeight / dstHeight;
@@ -440,8 +460,7 @@ function generateMonoJpeg(
     }
   }
 
-  ctx.putImageData(imgData, 0, 0);
-  return canvas.toDataURL('image/jpeg', quality);
+  return encodeRgbaToJpeg(data, dstWidth, dstHeight, quality);
 }
 
 /**

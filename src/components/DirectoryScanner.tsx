@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect } from 'react';
 import { 
   FolderSearch, 
   UploadCloud, 
@@ -12,7 +12,9 @@ import {
   FolderTree,
   ShieldCheck,
   Zap,
-  Image as ImageIcon
+  Image as ImageIcon,
+  Server,
+  Square
 } from 'lucide-react';
 import { FitsMetadata } from '../types/fits';
 import { FitsParser } from '../utils/fitsParser';
@@ -28,6 +30,105 @@ interface DirectoryScannerProps {
 interface ScannedFileInfo {
   file: File;
   relativePath: string;
+}
+
+interface NasScanState {
+  running: boolean;
+  phase: 'idle' | 'listing' | 'processing' | 'done' | 'cancelled' | 'error';
+  trigger: 'manual' | 'auto' | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  filesOnNas: number;
+  toProcess: number;
+  processed: number;
+  imported: number;
+  relinked: number;
+  skippedKnownPath: number;
+  skippedDuplicate: number;
+  skippedRecent: number;
+  failed: number;
+  currentFile: string;
+  errors: { file: string; error: string }[];
+  message: string;
+}
+
+interface NasInfo {
+  enabled: boolean;
+  root: string;
+  autoScanIntervalMin: number;
+}
+
+/**
+ * Server-side scan of the NAS share mounted into the container. The server
+ * reads the FITS files from its own disk, so nothing travels over the network
+ * to the browser; this hook only starts the job and polls its progress.
+ */
+function useNasScanner(isOpen: boolean, onFinished: () => void) {
+  const [info, setInfo] = useState<NasInfo | null>(null);
+  const [state, setState] = useState<NasScanState | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const wasRunning = useRef(false);
+  const onFinishedRef = useRef(onFinished);
+  onFinishedRef.current = onFinished;
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    fetch('/api/nas/info')
+      .then(r => r.json())
+      .then(data => {
+        if (cancelled || !data?.success) return;
+        setInfo({ enabled: data.enabled, root: data.root, autoScanIntervalMin: data.autoScanIntervalMin });
+        setState(data.state);
+        wasRunning.current = !!data.state?.running;
+      })
+      .catch(() => { if (!cancelled) setInfo(null); });
+    return () => { cancelled = true; };
+  }, [isOpen]);
+
+  const running = !!state?.running;
+  useEffect(() => {
+    if (!isOpen || !running) return;
+    const timer = setInterval(async () => {
+      try {
+        const data = await fetch('/api/nas/status').then(r => r.json());
+        if (data?.success) {
+          setState(data.state);
+          if (wasRunning.current && !data.state.running) onFinishedRef.current();
+          wasRunning.current = !!data.state.running;
+        }
+      } catch (_) {}
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [isOpen, running]);
+
+  const start = async () => {
+    setError(null);
+    try {
+      const data = await fetch('/api/nas/scan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({})
+      }).then(r => r.json());
+      if (!data?.success) {
+        setError(data?.error || "No s'ha pogut iniciar l'escaneig del NAS.");
+        return;
+      }
+      setState(data.state);
+      wasRunning.current = !!data.state?.running;
+    } catch (err: any) {
+      setError(err?.message || "No s'ha pogut contactar amb el servidor.");
+    }
+  };
+
+  const cancel = async () => {
+    try {
+      const data = await fetch('/api/nas/cancel', { method: 'POST' }).then(r => r.json());
+      if (data?.success) setState(data.state);
+    } catch (_) {}
+  };
+
+  return { info, state, error, start, cancel };
 }
 
 export const DirectoryScanner: React.FC<DirectoryScannerProps> = ({
@@ -48,6 +149,8 @@ export const DirectoryScanner: React.FC<DirectoryScannerProps> = ({
 
   const folderInputRef = useRef<HTMLInputElement>(null);
   const filesInputRef = useRef<HTMLInputElement>(null);
+
+  const nas = useNasScanner(isOpen, () => onScanComplete([]));
 
   if (!isOpen) return null;
 
@@ -358,7 +461,108 @@ export const DirectoryScanner: React.FC<DirectoryScannerProps> = ({
 
         {/* Modal Body */}
         <div className="p-5 space-y-4">
-          
+
+          {/* NAS scan (server-side, only when the NAS share is mounted in the container) */}
+          {nas.info?.enabled && (
+            <div className="p-3.5 bg-[#0D1117] border border-emerald-500/30 rounded-lg space-y-3">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
+                <div className="flex items-start space-x-2.5">
+                  <div className="p-2 rounded bg-emerald-600/10 text-emerald-400 mt-0.5 sm:mt-0 flex-shrink-0">
+                    <Server className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="text-xs font-semibold text-white">
+                      Escaneja el NAS directament
+                    </h3>
+                    <p className="text-[11px] text-slate-400">
+                      Busca FITS nous a <code className="text-emerald-300 font-mono">{nas.info.root}</code> i els cataloga des del mateix NAS, sense passar per la xarxa.
+                      {nas.info.autoScanIntervalMin > 0 && (
+                        <> Escaneig automàtic cada {nas.info.autoScanIntervalMin} min.</>
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                {nas.state?.running ? (
+                  <button
+                    id="btn-nas-cancel"
+                    onClick={nas.cancel}
+                    className="w-full sm:w-auto px-4 py-2 text-xs font-semibold text-slate-200 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded-md transition flex items-center justify-center gap-2 flex-shrink-0"
+                  >
+                    <Square className="w-3.5 h-3.5" />
+                    <span>Aturar</span>
+                  </button>
+                ) : (
+                  <button
+                    id="btn-nas-scan"
+                    disabled={isProcessing}
+                    onClick={nas.start}
+                    className="w-full sm:w-auto px-4 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-md shadow-sm transition flex items-center justify-center gap-2 disabled:opacity-50 flex-shrink-0"
+                  >
+                    <Server className="w-4 h-4" />
+                    <span>Escaneja el NAS</span>
+                  </button>
+                )}
+              </div>
+
+              {nas.state?.running && (
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px]">
+                    <span className="text-emerald-400 font-medium">
+                      {nas.state.phase === 'listing'
+                        ? 'Llistant fitxers FITS al NAS...'
+                        : `Processant fitxers nous${nas.state.trigger === 'auto' ? ' (automàtic)' : ''}...`}
+                    </span>
+                    {nas.state.phase === 'processing' && (
+                      <span className="font-mono text-slate-300">
+                        {nas.state.processed} / {nas.state.toProcess}
+                      </span>
+                    )}
+                  </div>
+                  <div className="w-full h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full bg-emerald-500 transition-all duration-300 ${nas.state.phase === 'listing' ? 'animate-pulse w-full opacity-40' : ''}`}
+                      style={nas.state.phase === 'processing'
+                        ? { width: `${nas.state.toProcess > 0 ? (nas.state.processed / nas.state.toProcess) * 100 : 100}%` }
+                        : undefined}
+                    />
+                  </div>
+                  {nas.state.currentFile && (
+                    <p className="text-[10px] text-slate-500 truncate font-mono">{nas.state.currentFile}</p>
+                  )}
+                </div>
+              )}
+
+              {nas.state && !nas.state.running && nas.state.finishedAt && (
+                <div className={`text-[11px] rounded p-2 border ${nas.state.phase === 'error' ? 'bg-rose-950/30 border-rose-800/40 text-rose-300' : 'bg-emerald-950/20 border-emerald-800/30 text-emerald-200'}`}>
+                  <p>
+                    {nas.state.message}{' '}
+                    <strong>{nas.state.imported}</strong> importats
+                    {nas.state.relinked > 0 && <>, <strong>{nas.state.relinked}</strong> re-enllaçats</>}
+                    , {nas.state.skippedKnownPath + nas.state.skippedDuplicate} ja catalogats
+                    {nas.state.skippedRecent > 0 && <>, {nas.state.skippedRecent} massa recents (es faran al pròxim escaneig)</>}
+                    {nas.state.failed > 0 && <>, <span className="text-rose-300">{nas.state.failed} amb errors</span></>}
+                    {' '}({nas.state.filesOnNas} FITS al NAS).
+                  </p>
+                  {nas.state.errors.length > 0 && (
+                    <details className="mt-1">
+                      <summary className="cursor-pointer text-rose-300">Veure errors</summary>
+                      <ul className="mt-1 space-y-0.5 font-mono text-[10px] text-rose-200/80 max-h-32 overflow-auto">
+                        {nas.state.errors.map((e, i) => (
+                          <li key={i} className="truncate" title={`${e.file}: ${e.error}`}>{e.file}: {e.error}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  )}
+                </div>
+              )}
+
+              {nas.error && (
+                <p className="text-[11px] text-rose-300">{nas.error}</p>
+              )}
+            </div>
+          )}
+
           {/* Direct Local Hard Drive Picker Box */}
           <div className="p-3.5 bg-[#0D1117] border border-blue-500/30 rounded-lg flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
             <div className="flex items-start space-x-2.5">
